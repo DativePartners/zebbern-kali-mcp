@@ -559,7 +559,11 @@ def run_httpx(params: Dict[str, Any]) -> Dict[str, Any]:
     if additional_args:
         argv += shlex.split(additional_args)
 
-    return execute_command_argv(argv, background=background)
+    # close_stdin: httpx reads targets from stdin whenever stdin is a pipe, and a
+    # background job's pipe is never written to and never closed, so the tool sat
+    # waiting for input that was never coming (job alive, 0-byte log). With stdin
+    # closed the same call returns in well under a second.
+    return execute_command_argv(argv, background=background, close_stdin=True)
 
 
 def run_searchsploit(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -779,7 +783,11 @@ def run_katana(params: Dict[str, Any]) -> Dict[str, Any]:
     if additional_args:
         argv += shlex.split(additional_args)
 
-    return execute_command_argv(argv, background=background)
+    # close_stdin: katana accepts piped stdin as a target source (`echo url | katana`)
+    # and has no flag to opt out, so an open pipe nobody writes to leaves it waiting
+    # for input -- the hang `tools_katana` showed. Closing stdin leaves -u as the
+    # only source.
+    return execute_command_argv(argv, background=background, close_stdin=True)
 
 
 def run_sslscan(params: Dict[str, Any]) -> Dict[str, Any]:
