@@ -389,6 +389,34 @@ def test_descendants_do_not_survive_primary_process_exit():
         manager.shutdown()
 
 
+def test_close_stdin_lets_a_stdin_reading_command_finish(manager):
+    """A job gets a stdin pipe nobody writes to; a tool that reads it waits forever.
+
+    httpx and katana take targets from stdin whenever stdin is a pipe, so both
+    sat `running` with an empty log while the binary itself was fine from a
+    shell. close_stdin hands the child /dev/null instead of a pipe, which is
+    what lets the same command reach a terminal state.
+    """
+    source = "import sys; sys.stdin.read()"
+
+    blocked = manager.start(python_command(source), shell=False, timeout=30)
+    try:
+        time.sleep(0.5)
+        assert manager.get(blocked["job_id"])["status"] == "running", (
+            "a command reading stdin must still be waiting while the pipe is open"
+        )
+    finally:
+        manager.cancel(blocked["job_id"])
+
+    closed = manager.start(
+        python_command(source), shell=False, timeout=30, close_stdin=True
+    )
+    completed = wait_for_terminal(manager, closed["job_id"])
+
+    assert completed["status"] == "succeeded"
+    assert completed["return_code"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Enumeration. Every other kind of server-side state can be listed --
 # msf_session_list, ssh_sessions, hosts_list, pivot_list_tunnels -- and jobs,
