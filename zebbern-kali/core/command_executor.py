@@ -14,9 +14,10 @@ KILL_MSG_DIR = "/app/tmp/.kill_messages"
 class CommandExecutor:
     """Class to handle command execution with better timeout management"""
 
-    def __init__(self, command: str, timeout: int = COMMAND_TIMEOUT):
+    def __init__(self, command: str, timeout: int = COMMAND_TIMEOUT, close_stdin: bool = False):
         self.command = command
         self.timeout = timeout
+        self.close_stdin = close_stdin
         self.process = None
         # Public, and str, exactly as before -- _finalize_output fills them in
         # from the chunk lists below before anything reads them. The readers used
@@ -81,6 +82,7 @@ class CommandExecutor:
             self.process = subprocess.Popen(
                 self.command,
                 shell=True,
+                stdin=subprocess.DEVNULL if self.close_stdin else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -239,7 +241,7 @@ class CommandExecutor:
             }
 
 
-def execute_command(command: str, on_output: Callable[[str, str], None] = None, timeout: int = None, background: bool = False) -> Dict[str, Any]:
+def execute_command(command: str, on_output: Callable[[str, str], None] = None, timeout: int = None, background: bool = False, close_stdin: bool = False) -> Dict[str, Any]:
     """
     Execute a shell command with optional streaming and tool-specific behavior.
 
@@ -249,6 +251,8 @@ def execute_command(command: str, on_output: Callable[[str, str], None] = None, 
         timeout: Optional timeout override (uses tool-specific timeout if not provided)
         background: Hand the command to job_manager and return a job handle
             immediately instead of waiting for it
+        close_stdin: Give the child /dev/null instead of inheriting a stdin it
+            should never read from (an open pipe is what hung httpx and katana).
 
     Returns:
         A dictionary containing the stdout, stderr, and return code, or the job
@@ -285,14 +289,14 @@ def execute_command(command: str, on_output: Callable[[str, str], None] = None, 
     # default instead of the table budget.
     if background:
         from .job_manager import job_manager
-        job = job_manager.start(command, shell=True, timeout=timeout)
+        job = job_manager.start(command, shell=True, timeout=timeout, close_stdin=close_stdin)
         return {**job, "background": True}
 
     # Check if the tool requires streaming
     requires_streaming = is_streaming_tool(tool_name)
 
     # Create executor with appropriate timeout
-    executor = CommandExecutor(command, timeout=timeout)
+    executor = CommandExecutor(command, timeout=timeout, close_stdin=close_stdin)
 
     # If streaming callback is provided or tool requires streaming, enable streaming
     if on_output or requires_streaming:
@@ -301,7 +305,7 @@ def execute_command(command: str, on_output: Callable[[str, str], None] = None, 
         return executor.execute()
 
 
-def execute_command_argv(argv: list, on_output: Callable[[str, str], None] = None, timeout: int = None, background: bool = False) -> Dict[str, Any]:
+def execute_command_argv(argv: list, on_output: Callable[[str, str], None] = None, timeout: int = None, background: bool = False, close_stdin: bool = False) -> Dict[str, Any]:
     """
     Execute a command using an argv list, quoting arguments for shell execution.
 
@@ -311,6 +315,8 @@ def execute_command_argv(argv: list, on_output: Callable[[str, str], None] = Non
         timeout: Optional timeout override
         background: Hand the command to job_manager and return a job handle
             immediately instead of waiting for it
+        close_stdin: Give the child /dev/null instead of inheriting a stdin it
+            should never read from (an open pipe is what hung httpx and katana).
 
     Returns:
         A dictionary containing the stdout, stderr, and return code
@@ -335,7 +341,7 @@ def execute_command_argv(argv: list, on_output: Callable[[str, str], None] = Non
         command = tool_name
 
     # Use the existing execute_command function for timeout and streaming behavior.
-    return execute_command(command, on_output=on_output, timeout=timeout, background=background)
+    return execute_command(command, on_output=on_output, timeout=timeout, background=background, close_stdin=close_stdin)
 
 
 def stream_command_execution(

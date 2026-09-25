@@ -107,8 +107,17 @@ class JobManager:
         cwd: Optional[str] = None,
         shell: bool = True,
         timeout: float = 3600,
+        close_stdin: bool = False,
     ) -> dict[str, Any]:
-        """Start a command and return its initial job metadata."""
+        """Start a command and return its initial job metadata.
+
+        close_stdin hands the job /dev/null instead of a pipe. Tools that read
+        targets from stdin when it is a pipe (httpx, katana) wait for input that
+        nobody is going to send and never see EOF -- that is how `tools_httpx`
+        and `tools_katana` sat `running` with an empty log past the five-minute
+        mark. `send_input` on such a job refuses with "not accepting input", by
+        the existing `process.stdin is None` guard.
+        """
         if not command:
             raise ValueError("command must not be empty")
         if not math.isfinite(timeout) or timeout <= 0:
@@ -132,7 +141,7 @@ class JobManager:
 
         popen_options: dict[str, Any] = {
             "shell": shell,
-            "stdin": subprocess.PIPE,
+            "stdin": subprocess.DEVNULL if close_stdin else subprocess.PIPE,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "cwd": cwd,
@@ -182,12 +191,14 @@ class JobManager:
             daemon=True,
             name=f"job-{job.job_id}-stderr",
         )
-        input_thread = threading.Thread(
-            target=self._write_input,
-            args=(job, process),
-            daemon=True,
-            name=f"job-{job.job_id}-stdin",
-        )
+        input_thread = None
+        if not close_stdin:
+            input_thread = threading.Thread(
+                target=self._write_input,
+                args=(job, process),
+                daemon=True,
+                name=f"job-{job.job_id}-stdin",
+            )
         watcher_thread = threading.Thread(
             target=self._watch,
             args=(job, process, stdout_thread, stderr_thread),
@@ -196,7 +207,8 @@ class JobManager:
         )
         stdout_thread.start()
         stderr_thread.start()
-        input_thread.start()
+        if input_thread is not None:
+            input_thread.start()
         watcher_thread.start()
         if cancel_after_start:
             self._terminate_process_tree(process, job.process_group_id)
