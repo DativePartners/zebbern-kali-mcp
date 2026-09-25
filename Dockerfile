@@ -522,8 +522,9 @@ RUN case "$INCLUDE_METASPLOIT" in \
 # El pod ya recibe NET_RAW/NET_ADMIN, así que las file-caps sobran: se quitan del binario.
 # La guarda final compara el CONJUNTO de caps de cada binario, no la línea entera: mirar la línea
 # con un grep de substrings dejaba pasar `cap_net_raw,cap_sys_admin=ep` sin ruido. Incluye
-# /usr/local/bin, donde caen los prebuilt de las capas 3a/3b. Si salta, el binario que aparece
-# tampoco podría ejecutarse en este contenedor: quítale las caps igual que a nmap.
+# /usr/local/bin, donde caen los prebuilt de las capas 3a/3b. Si salta, quítale las caps a ese
+# binario igual que a nmap: con el flag efectivo (`=e…`) ni siquiera llega a ejecutarse aquí, y con
+# un conjunto sólo permitido (`=p`) se ejecuta pero sin ganarlas.
 RUN setcap -r /usr/lib/nmap/nmap && \
     test -z "$(getcap /usr/lib/nmap/nmap)" && \
     command -v getcap >/dev/null && \
