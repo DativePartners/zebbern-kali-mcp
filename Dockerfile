@@ -88,6 +88,9 @@ RUN chmod +x /usr/local/bin/checkout-source
 
 # ---------- Layer 2: All runtime APT packages (single update) ----------
 # Pentest, wordlists, network/pivot, forensics/CTF, headless browser
+# chromium: navegador real, en PATH, para gowitness (captura) y katana en headless;
+# wafw00f: lo invoca `fingerprint_waf` (sin él solo mira cabeceras);
+# libcap2-bin: setcap/getcap, que usa el Layer 7e para quitar file-caps a nmap.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         nmap \
@@ -139,6 +142,9 @@ RUN apt-get update && \
         expect \
         netexec \
         ntpsec-ntpdate \
+        libcap2-bin \
+        chromium \
+        wafw00f \
     && rm -rf /var/lib/apt/lists/* \
     && (gunzip -f /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true)
 
@@ -247,6 +253,19 @@ RUN (cd /tmp && \
     unzip -o /tmp/RunasCs.zip -d /opt/windows-tools/ && \
     test -f /opt/windows-tools/RunasCs.exe && \
     rm -f /tmp/RunasCs.zip
+
+# Kiterunner (`kr`): `api_kiterunner_scan` lo invoca por nombre y el wrapper daba "kr not found".
+# Release PINEADA y checksum verificado, igual que el resto de binarios prebuilt de esta capa.
+ARG KITERUNNER_VER=1.0.2
+ARG KITERUNNER_SHA256=6f0b70aabf747de592445a690281897eebbc45927e9264185d34ffb11637613b
+RUN (cd /tmp && \
+    wget -q "https://github.com/assetnote/kiterunner/releases/download/v${KITERUNNER_VER}/kiterunner_${KITERUNNER_VER}_linux_amd64.tar.gz" -O kiterunner.tar.gz && \
+    echo "$KITERUNNER_SHA256  /tmp/kiterunner.tar.gz" | sha256sum -c - && \
+    tar -xzf kiterunner.tar.gz kr && \
+    mv kr /usr/local/bin/kr && \
+    chmod +x /usr/local/bin/kr && \
+    rm -f kiterunner.tar.gz) && \
+    which kr
 
 # ---------- Layer 3b1a: Tunnel tools (cloudflared, ngrok) ----------
 ARG CFVER=2026.8.2
@@ -408,7 +427,11 @@ RUN checkout-source https://github.com/m4ll0k/SecretFinder.git "$SECRETFINDER_RE
     chmod +x /opt/SecretFinder/SecretFinder.py
 
 # ---------- Layer 7a3: npm-based tools ----------
-RUN npm install -g webcrack
+# newman lo invoca `api_newman_run` (replay de colecciones Postman) y va PINEADO: sin pin, un
+# rebuild podía cambiar la versión bajo los pies sin que nadie lo pidiera.
+ARG NEWMAN_VERSION=6.2.2
+RUN npm install -g webcrack "newman@${NEWMAN_VERSION}" && \
+    command -v newman && newman --version
 
 # ---------- Layer 7b: Install Playwright browsers ----------
 RUN playwright install chromium --with-deps && \
@@ -487,6 +510,28 @@ RUN case "$INCLUDE_METASPLOIT" in \
       false) echo "Skipping Metasploit Framework (INCLUDE_METASPLOIT=false)" ;; \
       *) echo "INCLUDE_METASPLOIT must be true or false" >&2; exit 1 ;; \
     esac
+
+# ---------- Layer 8b: file-caps de nmap (SIST-49) ----------
+# nmap llega del paquete de Kali con file-caps `cap_net_bind_service,cap_net_admin,cap_net_raw=eip`.
+# El contenedor corre con bounding set = {NET_RAW, NET_ADMIN} (drop ALL + add NET_RAW/NET_ADMIN) y
+# el kernel recalcula `pP' = bset & fP` y devuelve EPERM cuando `fP` tiene una capability que el
+# bset no tiene (security/commoncap.c: bprm_caps_from_vfs_caps, y solo si el fichero lleva el flag
+# efectivo, que es el caso: `=eip`). cap_net_bind_service no está, así que el execve de
+# /usr/lib/nmap/nmap fallaba con EPERM y `tools_nmap` no arrancaba. Poner
+# `allowPrivilegeEscalation: true` NO lo arregla: el corte es del bounding set, no de no_new_privs.
+# El pod ya recibe NET_RAW/NET_ADMIN, así que las file-caps sobran: se quitan del binario.
+# La guarda final compara el CONJUNTO de caps de cada binario, no la línea entera: mirar la línea
+# con un grep de substrings dejaba pasar `cap_net_raw,cap_sys_admin=ep` sin ruido. Incluye
+# /usr/local/bin, donde caen los prebuilt de las capas 3a/3b. Si salta, quítale las caps a ese
+# binario igual que a nmap: con el flag efectivo (`=e…`) ni siquiera llega a ejecutarse aquí, y con
+# un conjunto sólo permitido (`=p`) se ejecuta pero sin ganarlas.
+RUN setcap -r /usr/lib/nmap/nmap && \
+    test -z "$(getcap /usr/lib/nmap/nmap)" && \
+    command -v getcap >/dev/null && \
+    ! getcap -r /usr/bin /usr/sbin /usr/lib /bin /sbin /usr/local/bin 2>/dev/null \
+      | sed 's/^[^ ]* //; s/=.*//' | tr ',' '\n' | grep -vE '^cap_net_(raw|admin)$' | grep -q . && \
+    nmap --version | head -n 1 && \
+    which chromium wafw00f newman kr
 
 # ---------- Layer 8: Application code ----------
 COPY zebbern-kali/ /app/zebbern-kali/
