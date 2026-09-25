@@ -511,18 +511,24 @@ RUN case "$INCLUDE_METASPLOIT" in \
       *) echo "INCLUDE_METASPLOIT must be true or false" >&2; exit 1 ;; \
     esac
 
-# ---------- Layer 7e: quitar file-caps a nmap (SIST-49) ----------
+# ---------- Layer 8b: file-caps de nmap (SIST-49) ----------
 # nmap llega del paquete de Kali con file-caps `cap_net_bind_service,cap_net_admin,cap_net_raw=eip`.
 # El contenedor corre con bounding set = {NET_RAW, NET_ADMIN} (drop ALL + add NET_RAW/NET_ADMIN) y
 # el kernel recalcula `pP' = bset & fP` y devuelve EPERM cuando `fP` tiene una capability que el
-# bset no tiene (security/commoncap.c: bprm_caps_from_vfs_caps). cap_net_bind_service no está, así
-# que el execve de /usr/lib/nmap/nmap fallaba con EPERM y `tools_nmap` no arrancaba. Poner
+# bset no tiene (security/commoncap.c: bprm_caps_from_vfs_caps, y solo si el fichero lleva el flag
+# efectivo, que es el caso: `=eip`). cap_net_bind_service no está, así que el execve de
+# /usr/lib/nmap/nmap fallaba con EPERM y `tools_nmap` no arrancaba. Poner
 # `allowPrivilegeEscalation: true` NO lo arregla: el corte es del bounding set, no de no_new_privs.
 # El pod ya recibe NET_RAW/NET_ADMIN, así que las file-caps sobran: se quitan del binario.
-# La guarda final falla el build si aparece otro binario con caps fuera de net_raw/net_admin.
+# La guarda final compara el CONJUNTO de caps de cada binario, no la línea entera: mirar la línea
+# con un grep de substrings dejaba pasar `cap_net_raw,cap_sys_admin=ep` sin ruido. Incluye
+# /usr/local/bin, donde caen los prebuilt de las capas 3a/3b. Si salta, el binario que aparece
+# tampoco podría ejecutarse en este contenedor: quítale las caps igual que a nmap.
 RUN setcap -r /usr/lib/nmap/nmap && \
     test -z "$(getcap /usr/lib/nmap/nmap)" && \
-    ! getcap -r /usr/bin /usr/sbin /usr/lib /bin /sbin 2>/dev/null | grep -vE 'cap_net_(raw|admin)' && \
+    command -v getcap >/dev/null && \
+    ! getcap -r /usr/bin /usr/sbin /usr/lib /bin /sbin /usr/local/bin 2>/dev/null \
+      | sed 's/^[^ ]* //; s/=.*//' | tr ',' '\n' | grep -vE '^cap_net_(raw|admin)$' | grep -q . && \
     nmap --version | head -n 1 && \
     which chromium wafw00f newman kr
 
